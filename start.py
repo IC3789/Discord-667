@@ -573,9 +573,5 @@ async def nouveau_code(interaction: discord.Interaction):
             )
 
 
-# Configuration pour le déploiement
-PORT = os.getenv('PORT', '8080')
-print(f"Le bot va démarrer sur le port {PORT}")
-
-# Lancer le bot
+# Lancer le bot directement
 bot.run(os.getenv('DISCORD_TOKEN'))
