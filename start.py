@@ -2,22 +2,30 @@ import os
 import discord
 import datetime
 import asyncio
+import threading
+from flask import Flask
 from discord.ui import Button, View
 from discord.ext import commands
 from dotenv import load_dotenv
 
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return 'Bot is running!'
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
 # Charger les variables d'environnement
 load_dotenv('token.env')
+token = os.getenv('DISCORD_TOKEN')
 
 # Configuration du bot
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='/', intents=intents)
-
-# Configuration pour Replit
-import os
-os.environ['REPLIT_HOST'] = '0.0.0.0'
 
 # Configuration
 spam_cooldown = commands.CooldownMapping.from_cooldown(
@@ -450,7 +458,6 @@ async def unlock(interaction: discord.Interaction):
         await interaction.response.send_message("Je n'ai pas la permission de déverrouiller ce salon.", ephemeral=True)
 
 
-
 # Commandes d'information
 @bot.tree.command(name="userinfo",
                   description="Informations sur un utilisateur")
@@ -573,5 +580,9 @@ async def nouveau_code(interaction: discord.Interaction):
             )
 
 
-# Lancer le bot directement
-bot.run(os.getenv('DISCORD_TOKEN'))
+# Démarrer Flask dans un thread séparé
+flask_thread = threading.Thread(target=run_flask)
+flask_thread.start()
+
+# Lancer le bot
+bot.run(token)
