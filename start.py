@@ -15,6 +15,10 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
+# Configuration pour Replit
+import os
+os.environ['REPLIT_HOST'] = '0.0.0.0'
+
 # Configuration
 spam_cooldown = commands.CooldownMapping.from_cooldown(
     3, 10, commands.BucketType.user)
