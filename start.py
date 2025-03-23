@@ -392,9 +392,10 @@ async def warnings(interaction: discord.Interaction, membre: discord.Member):
 @commands.has_permissions(manage_messages=True)
 @commands.check(role_check)
 async def clear(interaction: discord.Interaction, nombre: int):
-    await interaction.channel.purge(limit=nombre + 1)
-    await interaction.response.send_message(
-        f"{nombre} messages ont été supprimés")
+    await interaction.response.defer()
+    await interaction.channel.purge(limit=nombre)
+    await interaction.followup.send(
+        f"{nombre} messages ont été supprimés", ephemeral=True)
     if log_channel:
         await log_channel.send(
             f"🗑️ {interaction.user} a supprimé {nombre} messages dans {interaction.channel.mention}"
@@ -571,6 +572,10 @@ async def nouveau_code(interaction: discord.Interaction):
                 f"❌ Impossible d'envoyer le nouveau captcha à {interaction.user.mention} (DMs fermés)"
             )
 
+
+# Configuration pour le déploiement
+PORT = os.getenv('PORT', '8080')
+print(f"Le bot va démarrer sur le port {PORT}")
 
 # Lancer le bot
 bot.run(os.getenv('DISCORD_TOKEN'))
