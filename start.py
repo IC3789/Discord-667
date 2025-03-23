@@ -106,8 +106,24 @@ async def verify(interaction: discord.Interaction, code: str):
         await interaction.user.remove_roles(unverified_role)
 
     del captcha_codes[interaction.user.id]
+       
+    # Message de confirmation à l'utilisateur
     await interaction.response.send_message(
         "✅ Vous avez été vérifié avec succès!", ephemeral=True)
+    
+    # Créer et envoyer l'embed de log
+    log_embed = discord.Embed(
+        title="✅ Nouvelle Vérification",
+        description=f"L'utilisateur {interaction.user.mention} a été vérifié",
+        color=discord.Color.green(),
+        timestamp=datetime.datetime.now()
+    )
+    log_embed.add_field(name="ID de l'utilisateur", value=interaction.user.id)
+    log_embed.set_footer(text=f"Serveur: {interaction.guild.name}")
+    
+    log_channel = interaction.guild.get_channel(1332456399627747353)  # ID du salon de logs
+    if log_channel:
+        await log_channel.send(embed=log_embed)
 
 
 @bot.tree.command(name="ticket", description="Ouvrir un nouveau ticket")
