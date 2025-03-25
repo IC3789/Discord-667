@@ -1,6 +1,8 @@
-discord.py>=2.4.0
-python-dotenv>=1.0.1
-asyncio>=3.4.3
-aiohttp>=3.7.4
-flask>=3.0.0
-gunicorn>=21.2.0
+
+discord.py==2.4.1
+python-dotenv==1.0.1
+asyncio==3.4.3
+aiohttp==3.9.3
+flask==3.0.2
+gunicorn==21.2.0
+requests==2.31.0
