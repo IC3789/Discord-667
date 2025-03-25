@@ -39,6 +39,7 @@ captcha_codes = {}
 ticket_category_id = 1332456333391433739
 staff_role_id = 1332456095393906752
 captcha_channel = None
+captcha_timeouts = {}
 
 
 def generate_captcha():
@@ -79,36 +80,6 @@ class TicketView(View):
                 await interaction.followup.send(
                     "Une erreur est survenue lors de la fermeture du ticket.",
                     ephemeral=True)
-
-
-@bot.tree.command(name="verify",
-                  description="Vérifier votre compte avec le code captcha")
-async def verify(interaction: discord.Interaction, code: str):
-    if interaction.user.id not in captcha_codes:
-        await interaction.response.send_message(
-            "Vous n'avez pas de code captcha en attente.", ephemeral=True)
-        return
-
-    if captcha_codes[interaction.user.id] != code:
-        await interaction.response.send_message(
-            "Code incorrect. Veuillez réessayer.", ephemeral=True)
-        return
-
-    verified_role = discord.utils.get(interaction.guild.roles, name="Vérifié")
-    visitor_role = interaction.guild.get_role(1332456121511710790)
-    unverified_role = discord.utils.get(interaction.guild.roles,
-                                        name="Non vérifié")
-
-    if not verified_role:
-        verified_role = await interaction.guild.create_role(name="Vérifié")
-
-    await interaction.user.add_roles(verified_role, visitor_role)
-    if unverified_role:
-        await interaction.user.remove_roles(unverified_role)
-
-    del captcha_codes[interaction.user.id]
-    await interaction.response.send_message(
-        "✅ Vous avez été vérifié avec succès!", ephemeral=True)
 
 
 @bot.tree.command(name="ticket", description="Ouvrir un nouveau ticket")
@@ -202,54 +173,127 @@ async def on_ready():
     await bot.tree.sync()
 
 
-@bot.event
-async def on_member_join(member):
-    if not captcha_channel:
-        return
-        
-    unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
-    if not unverified_role:
-        unverified_role = await member.guild.create_role(name="Non vérifié")
-    await member.add_roles(unverified_role)
-    
-    code = generate_captcha()
-    captcha_codes[member.id] = code
-    
-    embed = discord.Embed(title="Vérification requise",
-                          color=discord.Color.blue())
-    embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon:"
-    embed.add_field(name="Code de vérification", value=f"```{code}```")
-    
-    await captcha_channel.send(embed=embed)
-    if log_channel:
-        await log_channel.send(f"🤖 Captcha envoyé pour {member.mention}")
+    async def delete_after_timeout(msg, member_id, timeout):
+        await asyncio.sleep(timeout)
+        if member_id in captcha_codes:
+            try:
+                # Supprimer l'embed de vérification
+                await msg.delete()
 
+                # Trouver le membre
+                member = msg.guild.get_member(member_id)
+                if member:
+                    # Enlever le rôle Non vérifié et kick si non vérifié
+                    unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
+                    if unverified_role:
+                        await member.remove_roles(unverified_role)
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-        
-    if message.channel == captcha_channel and message.author.id in captcha_codes:
-        if message.content == captcha_codes[message.author.id]:
-            verified_role = discord.utils.get(message.guild.roles, name="Vérifié")
-            visitor_role = message.guild.get_role(1332456121511710790)
-            unverified_role = discord.utils.get(message.guild.roles, name="Non vérifié")
-            
-            if not verified_role:
-                verified_role = await message.guild.create_role(name="Vérifié")
-                
-            await message.author.add_roles(verified_role, visitor_role)
-            if unverified_role:
-                await message.author.remove_roles(unverified_role)
-                
-            await message.delete()
-            del captcha_codes[message.author.id]
-            
-            success_msg = await message.channel.send(f"✅ {message.author.mention} a été vérifié avec succès!")
-            await asyncio.sleep(5)
-            await success_msg.delete()
+                    # Log de l'expiration du captcha
+                    if log_channel:
+                        await log_channel.send(f"⏰ Délai de vérification expiré pour {member.mention}")
+
+                    # Kick si le membre n'est pas vérifié
+                    await member.kick(reason="Vérification captcha non complétée")
+
+                # Nettoyer les données
+                del captcha_codes[member_id]
+                del captcha_timeouts[member_id]
+
+            except discord.HTTPException as e:
+                if log_channel:
+                    await log_channel.send(f"❌ Erreur lors de la gestion du captcha: {e}")
+
+    @bot.event
+    async def on_member_join(member):
+        if not captcha_channel:
             return
+
+        try:
+            # Création du rôle Non vérifié
+            unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
+            if not unverified_role:
+                unverified_role = await member.guild.create_role(name="Non vérifié")
+
+            # Ajout du rôle Non vérifié
+            await member.add_roles(unverified_role)
+
+            # Génération du code captcha
+            code = generate_captcha()
+            captcha_codes[member.id] = code
+
+            # Création de l'embed de vérification
+            embed = discord.Embed(title="Vérification requise", color=discord.Color.blue())
+            embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon dans les 2 minutes:\n```{code}```"
+
+            # Envoi de l'embed
+            msg = await captcha_channel.send(embed=embed)
+
+            # Log de l'envoi du captcha
+            if log_channel:
+                await log_channel.send(f"🤖 Captcha envoyé pour {member.mention} (Code: {code})")
+
+            # Mise en place du timeout
+            captcha_timeouts[member.id] = asyncio.create_task(delete_after_timeout(msg, member.id, 120))
+
+        except Exception as e:
+            if log_channel:
+                await log_channel.send(f"❌ Erreur lors de la gestion de l'arrivée de {member.mention}: {e}")
+
+    @bot.event
+    async def on_message(message):
+        if message.author.bot:
+            return
+
+        if message.channel == captcha_channel and message.author.id in captcha_codes:
+            try:
+                # Vérification du code
+                if message.content == captcha_codes[message.author.id]:
+                    # Récupération des rôles
+                    verified_role = discord.utils.get(message.guild.roles, name="Vérifié")
+                    visitor_role = message.guild.get_role(1332456121511710790)
+                    unverified_role = discord.utils.get(message.guild.roles, name="Non vérifié")
+
+                    # Création du rôle Vérifié si nécessaire
+                    if not verified_role:
+                        verified_role = await message.guild.create_role(name="Vérifié")
+
+                    # Ajout des rôles
+                    await message.author.add_roles(verified_role, visitor_role)
+                    if unverified_role:
+                        await message.author.remove_roles(unverified_role)
+
+                    # Suppression du message de vérification
+                    await message.delete()
+
+                    # Annulation du timeout
+                    if message.author.id in captcha_timeouts:
+                        captcha_timeouts[message.author.id].cancel()
+
+                    # Suppression des données de captcha
+                    del captcha_codes[message.author.id]
+                    del captcha_timeouts[message.author.id]
+
+                    # Log de la vérification réussie
+                    if log_channel:
+                        await log_channel.send(f"✅ {message.author.mention} a été vérifié avec succès")
+
+                    # Message temporaire de confirmation
+                    success_msg = await message.channel.send(f"✅ {message.author.mention} a été vérifié avec succès!")
+                    await asyncio.sleep(5)
+                    await success_msg.delete()
+                    return
+                else:
+                    # Suppression du message incorrect
+                    await message.delete()
+
+                    # Log de la tentative incorrecte
+                    if log_channel:
+                        await log_channel.send(f"❌ Tentative de vérification incorrecte pour {message.author.mention}")
+                    return
+
+            except Exception as e:
+                if log_channel:
+                    await log_channel.send(f"❌ Erreur lors de la vérification de {message.author.mention}: {e}")
 
     # Vérification des permissions
     if message.author.guild_permissions.administrator:
@@ -605,6 +649,48 @@ async def nouveau_code(interaction: discord.Interaction):
             await log_channel.send(
                 f"❌ Impossible d'envoyer le nouveau captcha à {interaction.user.mention} (DMs fermés)"
             )
+
+
+@bot.event
+async def on_member_join(member):
+    if not captcha_channel:
+        return
+
+    unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
+    if not unverified_role:
+        unverified_role = await member.guild.create_role(name="Non vérifié")
+    await member.add_roles(unverified_role)
+
+    code = generate_captcha()
+    captcha_codes[member.id] = code
+    captcha_timeouts[member.id] = asyncio.create_task(asyncio.sleep(120))
+
+    embed = discord.Embed(title="Vérification requise", color=discord.Color.blue())
+    embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon dans les 2 minutes:\n```{code}```"
+
+    msg = await captcha_channel.send(embed=embed)
+    captcha_timeouts[member.id] = asyncio.create_task(delete_after_timeout(msg, member.id, 120))
+
+
+async def delete_after_timeout(msg, member_id, timeout):
+    await asyncio.sleep(timeout)
+    if member_id in captcha_codes:
+        try:
+            await msg.delete()
+            await captcha_channel.send(f"{msg.author.mention} Votre temps de vérification a expiré.")
+            await member_kick(msg.author)
+            del captcha_codes[member_id]
+            del captcha_timeouts[member_id]
+
+        except discord.HTTPException:
+            pass
+
+
+async def member_kick(member):
+    try:
+        await member.kick(reason="Captcha non résolu dans le délai imparti.")
+    except discord.HTTPException as e:
+        print(f"Erreur lors de l'expulsion de {member}: {e}")
 
 
 # Démarrer Flask dans un thread séparé
