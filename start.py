@@ -38,6 +38,7 @@ log_channel = None
 captcha_codes = {}
 ticket_category_id = 1332456333391433739
 staff_role_id = 1332456095393906752
+captcha_channel = None
 
 
 def generate_captcha():
@@ -106,24 +107,8 @@ async def verify(interaction: discord.Interaction, code: str):
         await interaction.user.remove_roles(unverified_role)
 
     del captcha_codes[interaction.user.id]
-       
-    # Message de confirmation à l'utilisateur
     await interaction.response.send_message(
         "✅ Vous avez été vérifié avec succès!", ephemeral=True)
-    
-    # Créer et envoyer l'embed de log
-    log_embed = discord.Embed(
-        title="✅ Nouvelle Vérification",
-        description=f"L'utilisateur {interaction.user.mention} a été vérifié",
-        color=discord.Color.green(),
-        timestamp=datetime.datetime.now()
-    )
-    log_embed.add_field(name="ID de l'utilisateur", value=interaction.user.id)
-    log_embed.set_footer(text=f"Serveur: {interaction.guild.name}")
-    
-    log_channel = interaction.guild.get_channel(1332456399627747353)  # ID du salon de logs
-    if log_channel:
-        await log_channel.send(embed=log_embed)
 
 
 @bot.tree.command(name="ticket", description="Ouvrir un nouveau ticket")
@@ -219,33 +204,52 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
+    if not captcha_channel:
+        return
+        
     unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
     if not unverified_role:
         unverified_role = await member.guild.create_role(name="Non vérifié")
     await member.add_roles(unverified_role)
+    
     code = generate_captcha()
     captcha_codes[member.id] = code
+    
     embed = discord.Embed(title="Vérification requise",
                           color=discord.Color.blue())
-    embed.description = f"Bienvenue sur {member.guild.name}!\nPour accéder au serveur, utilisez la commande `/verify` avec le code ci-dessous:"
-    embed.add_field(name="Votre code de vérification", value=f"```{code}```")
-    embed.set_footer(text="Utilisez /verify <code> pour vous vérifier")
-    try:
-        await member.send(embed=embed)
-        if log_channel:
-            await log_channel.send(
-                f"🤖 Un captcha a été envoyé à {member.mention}")
-    except:
-        if log_channel:
-            await log_channel.send(
-                f"❌ Impossible d'envoyer le captcha à {member.mention} (DMs fermés)"
-            )
+    embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon:"
+    embed.add_field(name="Code de vérification", value=f"```{code}```")
+    
+    await captcha_channel.send(embed=embed)
+    if log_channel:
+        await log_channel.send(f"🤖 Captcha envoyé pour {member.mention}")
 
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
+        
+    if message.channel == captcha_channel and message.author.id in captcha_codes:
+        if message.content == captcha_codes[message.author.id]:
+            verified_role = discord.utils.get(message.guild.roles, name="Vérifié")
+            visitor_role = message.guild.get_role(1332456121511710790)
+            unverified_role = discord.utils.get(message.guild.roles, name="Non vérifié")
+            
+            if not verified_role:
+                verified_role = await message.guild.create_role(name="Vérifié")
+                
+            await message.author.add_roles(verified_role, visitor_role)
+            if unverified_role:
+                await message.author.remove_roles(unverified_role)
+                
+            await message.delete()
+            del captcha_codes[message.author.id]
+            
+            success_msg = await message.channel.send(f"✅ {message.author.mention} a été vérifié avec succès!")
+            await asyncio.sleep(5)
+            await success_msg.delete()
+            return
 
     # Vérification des permissions
     if message.author.guild_permissions.administrator:
@@ -557,6 +561,13 @@ async def whitelist_cmd(interaction: discord.Interaction, action: str,
 
 
 # Configuration des logs
+@bot.tree.command(name="channelscaptcha", description="Définir le salon pour les captchas")
+@commands.has_permissions(administrator=True)
+async def set_captcha_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    global captcha_channel
+    captcha_channel = channel
+    await interaction.response.send_message(f"Salon des captchas défini sur {channel.mention}")
+
 @bot.tree.command(name="logchannel", description="Définir le salon des logs")
 @commands.has_permissions(administrator=True)
 async def set_log_channel(interaction: discord.Interaction,
