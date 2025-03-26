@@ -178,6 +178,20 @@ async def setcaptcha(interaction: discord.Interaction, salon: discord.TextChanne
     captcha_channel = salon
     await interaction.response.send_message(f"Salon de captcha défini sur {salon.mention}")
 
+@bot.tree.command(name="setlogs", description="Définir le salon des logs")
+@commands.has_permissions(administrator=True)
+async def setlogs(interaction: discord.Interaction, salon: discord.TextChannel):
+    global log_channel
+    log_channel = salon
+    await interaction.response.send_message(f"Salon des logs défini sur {salon.mention}")
+    
+    # Message de confirmation dans le salon des logs
+    embed = discord.Embed(title="✅ Salon des logs configuré", color=discord.Color.green())
+    embed.description = "Les logs seront désormais envoyés dans ce salon"
+    embed.add_field(name="Configuré par", value=f"{interaction.user.mention}")
+    embed.set_footer(text=f"ID de l'action: {interaction.id}")
+    await log_channel.send(embed=embed)
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
