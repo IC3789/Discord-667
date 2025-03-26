@@ -240,13 +240,10 @@ async def check_timeout(member_id, channel):
         member = channel.guild.get_member(member_id)
         if member:
             await channel.purge(limit=100, check=lambda m: m.author == bot.user)
-            await member.kick(reason="N'a pas complété la vérification dans les 2 minutes")
-
             if log_channel:
-                embed = discord.Embed(title="⏰ Timeout de vérification", color=discord.Color.red())
+                embed = discord.Embed(title="⏰ Timeout de vérification", color=discord.Color.orange())
                 embed.add_field(name="Utilisateur", value=f"{member.mention} ({member.id})")
-                embed.add_field(name="Compte créé le", value=member.created_at.strftime("%d/%m/%Y %H:%M"))
-                embed.add_field(name="Rejoint le", value=member.joined_at.strftime("%d/%m/%Y %H:%M"))
+                embed.add_field(name="Note", value="Le code captcha a expiré")
                 embed.set_thumbnail(url=member.display_avatar.url)
                 await log_channel.send(embed=embed)
 
@@ -337,22 +334,26 @@ async def on_message(message):
                 captcha_attempts[message.author.id] = 0
             captcha_attempts[message.author.id] += 1
             
+            # Vérification du nombre de tentatives
+            remaining_attempts = 3 - captcha_attempts[message.author.id]
+            
+            if captcha_attempts[message.author.id] >= 3:
+                try:
+                    await message.author.send("Vous avez été exclu pour avoir dépassé le nombre maximum de tentatives.")
+                except:
+                    pass
+                await message.author.kick(reason="3 tentatives incorrectes de captcha")
+                del captcha_codes[message.author.id]
+                del captcha_attempts[message.author.id]
+                if log_channel:
+                    await log_channel.send(f"👢 {message.author.mention} a été expulsé après 3 tentatives incorrectes de captcha")
+                return
+            
             # Envoi d'un message privé avec le nombre de tentatives restantes
-            remaining_attempts = MAX_ATTEMPTS - captcha_attempts[message.author.id]
             try:
                 await message.author.send(f"Il vous reste {remaining_attempts} tentatives. Code entré: `{message.content}`")
             except:
                 pass
-                
-            # Vérification du nombre de tentatives
-            if captcha_attempts[message.author.id] > MAX_ATTEMPTS:
-                try:
-                    await message.author.send("Vous avez dépassé le nombre maximum de tentatives.")
-                except:
-                    pass
-                await message.author.kick(reason="Trop de tentatives de captcha incorrectes")
-                del captcha_codes[message.author.id]
-                del captcha_attempts[message.author.id]
                 if log_channel:
                     await log_channel.send(f"🚫 {message.author.mention} a été expulsé pour trop de tentatives de captcha incorrectes")
                 return
@@ -833,11 +834,10 @@ async def on_member_join(member):
     try:
         await asyncio.wait_for(captcha_timeouts[member.id], timeout=120)
         if member.id in captcha_codes:
-            await member.kick(reason="Timeout captcha")
+            if log_channel:
+                await log_channel.send(f"⚠️ {member.mention} n'a pas complété le captcha dans le temps imparti")
             del captcha_codes[member.id]
             del captcha_timeouts[member.id]
-            if log_channel:
-                await log_channel.send(f"{member} a été expulsé pour timeout captcha")
 
     except asyncio.TimeoutError:
         pass
