@@ -3,6 +3,8 @@ import discord
 import datetime
 import asyncio
 import threading
+import random
+from discord import Embed
 from flask import Flask
 from discord.ui import Button, View
 from discord.ext import commands
@@ -15,7 +17,8 @@ def home():
     return 'Bot is running!'
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # Charger les variables d'environnement
 load_dotenv('token.env')
@@ -41,32 +44,29 @@ staff_role_id = 1332456095393906752
 captcha_channel = None
 captcha_timeouts = {}
 
-
 def generate_captcha():
     """Génère un code captcha aléatoire"""
     import random
     import string
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-
 class TicketView(View):
-
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Fermer le ticket",
-                       style=discord.ButtonStyle.danger,
-                       emoji="🔒")
+                      style=discord.ButtonStyle.danger,
+                      emoji="🔒")
     async def close_ticket(self, interaction: discord.Interaction,
-                           button: discord.ui.Button):
+                          button: discord.ui.Button):
         if interaction.channel.name.startswith("ticket-"):
             embed = discord.Embed(
                 title="Confirmation de fermeture",
                 description="Êtes-vous sûr de vouloir fermer ce ticket ?",
                 color=discord.Color.red())
             await interaction.response.send_message(embed=embed,
-                                                    ephemeral=True,
-                                                    delete_after=60)
+                                                  ephemeral=True,
+                                                  delete_after=60)
 
             try:
                 await interaction.channel.send(
@@ -80,7 +80,6 @@ class TicketView(View):
                 await interaction.followup.send(
                     "Une erreur est survenue lors de la fermeture du ticket.",
                     ephemeral=True)
-
 
 @bot.tree.command(name="ticket", description="Ouvrir un nouveau ticket")
 async def ticket(interaction: discord.Interaction, sujet: str):
@@ -133,7 +132,6 @@ async def ticket(interaction: discord.Interaction, sujet: str):
             f"🎫 Nouveau ticket créé par {interaction.user.mention} - Sujet: {sujet}"
         )
 
-
 @bot.tree.command(name="panel_ticket",
                   description="Afficher le panel de ticket")
 @commands.has_permissions(administrator=True)
@@ -166,134 +164,210 @@ async def panel_ticket(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, view=TicketView())
 
-
 @bot.event
 async def on_ready():
     print(f'Bot connecté en tant que {bot.user}')
     await bot.tree.sync()
+    # Start the Flask server in a separate thread
+    threading.Thread(target=run_flask, daemon=True).start()
 
+@bot.tree.command(name="setcaptcha", description="Définir le salon pour les captchas")
+@commands.has_permissions(administrator=True)
+async def setcaptcha(interaction: discord.Interaction, salon: discord.TextChannel):
+    global captcha_channel
+    captcha_channel = salon
+    await interaction.response.send_message(f"Salon de captcha défini sur {salon.mention}")
 
-    async def delete_after_timeout(msg, member_id, timeout):
-        await asyncio.sleep(timeout)
-        if member_id in captcha_codes:
-            try:
-                # Supprimer l'embed de vérification
-                await msg.delete()
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
 
-                # Trouver le membre
-                member = msg.guild.get_member(member_id)
-                if member:
-                    # Enlever le rôle Non vérifié et kick si non vérifié
-                    unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
-                    if unverified_role:
-                        await member.remove_roles(unverified_role)
+    if message.channel == captcha_channel and message.author.id in captcha_codes:
+        await message.delete()
+        if message.content == captcha_codes[message.author.id]:
+            verified_role = discord.utils.get(message.guild.roles, name="Vérifié")
+            visitor_role = message.guild.get_role(1332456121511710790)
+            unverified_role = discord.utils.get(message.guild.roles, name="Non vérifié")
 
-                    # Log de l'expiration du captcha
-                    if log_channel:
-                        await log_channel.send(f"⏰ Délai de vérification expiré pour {member.mention}")
+            if not verified_role:
+                verified_role = await message.guild.create_role(name="Vérifié")
 
-                    # Kick si le membre n'est pas vérifié
-                    await member.kick(reason="Vérification captcha non complétée")
+            await message.author.add_roles(verified_role, visitor_role)
+            if unverified_role:
+                await message.author.remove_roles(unverified_role)
 
-                # Nettoyer les données
-                del captcha_codes[member_id]
-                del captcha_timeouts[member_id]
+            await message.channel.purge(limit=100, check=lambda m: m.author == bot.user or m.author == message.author)
 
-            except discord.HTTPException as e:
-                if log_channel:
-                    await log_channel.send(f"❌ Erreur lors de la gestion du captcha: {e}")
-
-    @bot.event
-    async def on_member_join(member):
-        if not captcha_channel:
-            return
-
-        try:
-            # Création du rôle Non vérifié
-            unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
-            if not unverified_role:
-                unverified_role = await member.guild.create_role(name="Non vérifié")
-
-            # Ajout du rôle Non vérifié
-            await member.add_roles(unverified_role)
-
-            # Génération du code captcha
-            code = generate_captcha()
-            captcha_codes[member.id] = code
-
-            # Création de l'embed de vérification
-            embed = discord.Embed(title="Vérification requise", color=discord.Color.blue())
-            embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon dans les 2 minutes:\n```{code}```"
-
-            # Envoi de l'embed
-            msg = await captcha_channel.send(embed=embed)
-
-            # Log de l'envoi du captcha
             if log_channel:
-                await log_channel.send(f"🤖 Captcha envoyé pour {member.mention} (Code: {code})")
+                embed = discord.Embed(title="✅ Vérification Réussie", color=discord.Color.green())
+                embed.add_field(name="Utilisateur", value=f"{message.author.mention} ({message.author.id})")
+                embed.add_field(name="Compte créé le", value=message.author.created_at.strftime("%d/%m/%Y %H:%M"))
+                embed.add_field(name="Rejoint le", value=message.author.joined_at.strftime("%d/%m/%Y %H:%M"))
+                embed.set_thumbnail(url=message.author.display_avatar.url)
+                await log_channel.send(embed=embed)
 
-            # Mise en place du timeout
-            captcha_timeouts[member.id] = asyncio.create_task(delete_after_timeout(msg, member.id, 120))
+            del captcha_codes[message.author.id]
+
+async def check_timeout(member_id, channel):
+    await asyncio.sleep(120)
+    if member_id in captcha_codes:
+        member = channel.guild.get_member(member_id)
+        if member:
+            await channel.purge(limit=100, check=lambda m: m.author == bot.user)
+            await member.kick(reason="N'a pas complété la vérification dans les 2 minutes")
+
+            if log_channel:
+                embed = discord.Embed(title="⏰ Timeout de vérification", color=discord.Color.red())
+                embed.add_field(name="Utilisateur", value=f"{member.mention} ({member.id})")
+                embed.add_field(name="Compte créé le", value=member.created_at.strftime("%d/%m/%Y %H:%M"))
+                embed.add_field(name="Rejoint le", value=member.joined_at.strftime("%d/%m/%Y %H:%M"))
+                embed.set_thumbnail(url=member.display_avatar.url)
+                await log_channel.send(embed=embed)
+
+            del captcha_codes[member_id]
+
+@bot.event
+async def on_member_join(member):
+    if not captcha_channel:
+        return
+
+    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    captcha_codes[member.id] = code
+
+    unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
+    if not unverified_role:
+        unverified_role = await member.guild.create_role(name="Non vérifié")
+    await member.add_roles(unverified_role)
+
+    embed = discord.Embed(title="Vérification Requise", color=discord.Color.blue())
+    embed.description = f"Bienvenue {member.mention}!\nVeuillez entrer le code suivant pour accéder au serveur:\n```{code}```"
+    await captcha_channel.send(embed=embed)
+
+    if log_channel:
+        embed = discord.Embed(title="👋 Nouveau Membre", color=discord.Color.blue())
+        embed.add_field(name="Utilisateur", value=f"{member.mention} ({member.id})")
+        embed.add_field(name="Compte créé le", value=member.created_at.strftime("%d/%m/%Y %H:%M"))
+        embed.add_field(name="Code Captcha", value=f"```{code}```")
+        embed.set_thumbnail(url=member.display_avatar.url)
+        await log_channel.send(embed=embed)
+
+    asyncio.create_task(check_timeout(member.id, captcha_channel))
+
+@bot.event
+async def on_member_join(member):
+    if not captcha_channel:
+        return
+
+    try:
+        # Création du rôle Non vérifié
+        unverified_role = discord.utils.get(member.guild.roles, name="Non vérifié")
+        if not unverified_role:
+            unverified_role = await member.guild.create_role(name="Non vérifié")
+
+        # Ajout du rôle Non vérifié
+        await member.add_roles(unverified_role)
+
+        # Génération du code captcha
+        code = generate_captcha()
+        captcha_codes[member.id] = code
+
+        # Création de l'embed de vérification
+        embed = discord.Embed(title="Vérification requise", color=discord.Color.blue())
+        embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon dans les 2 minutes:\n```{code}```"
+
+        # Envoi de l'embed
+        msg = await captcha_channel.send(embed=embed)
+
+        # Log de l'envoi du captcha
+        if log_channel:
+            embed = discord.Embed(title="🤖 Captcha Envoyé", color=discord.Color.green())
+            embed.add_field(name="Utilisateur", value=f"{member.mention} ({member.id})")
+            embed.add_field(name="Code", value=f"```{code}```")
+            embed.add_field(name="Compte créé le", value=member.created_at.strftime("%d/%m/%Y %H:%M"))
+            embed.add_field(name="Rejoint le", value=member.joined_at.strftime("%d/%m/%Y %H:%M"))
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+            await log_channel.send(embed=embed)
+
+        # Mise en place du timeout
+        captcha_timeouts[member.id] = asyncio.create_task(delete_after_timeout(msg, member.id, 120))
+
+    except Exception as e:
+        if log_channel:
+            await log_channel.send(f"❌ Erreur lors de la gestion de l'arrivée de {member.mention}: {e}")
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    if message.channel == captcha_channel and message.author.id in captcha_codes:
+        try:
+            # Vérification du code
+            if message.content == captcha_codes[message.author.id]:
+                # Récupération des rôles
+                verified_role = discord.utils.get(message.guild.roles, name="Vérifié")
+                visitor_role = message.guild.get_role(1332456121511710790)
+                unverified_role = discord.utils.get(message.guild.roles, name="Non vérifié")
+
+                # Suppression de tous les messages du salon
+                await captcha_channel.purge()
+
+                # Création du rôle Vérifié si nécessaire
+                if not verified_role:
+                    verified_role = await message.guild.create_role(name="Vérifié")
+
+                # Ajout des rôles
+                await message.author.add_roles(verified_role, visitor_role)
+                if unverified_role:
+                    await message.author.remove_roles(unverified_role)
+
+                # Suppression du message de vérification
+                await message.delete()
+
+                # Annulation du timeout
+                if message.author.id in captcha_timeouts:
+                    captcha_timeouts[message.author.id].cancel()
+
+                # Suppression des données de captcha
+                del captcha_codes[message.author.id]
+                del captcha_timeouts[message.author.id]
+
+                # Log de la vérification réussie
+                if log_channel:
+                    embed = discord.Embed(title="✅ Vérification Réussie", color=discord.Color.green())
+                    embed.add_field(name="Utilisateur", value=f"{message.author.mention} ({message.author.id})")
+                    embed.add_field(name="Compte créé le", value=message.author.created_at.strftime("%d/%m/%Y %H:%M"))
+                    embed.add_field(name="Rejoint le", value=message.author.joined_at.strftime("%d/%m/%Y %H:%M"))
+                    embed.set_thumbnail(url=message.author.display_avatar.url)
+                    embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+                    await log_channel.send(embed=embed)
+
+                # Message temporaire de confirmation
+                success_msg = await message.channel.send(f"✅ {message.author.mention} a été vérifié avec succès!")
+                await asyncio.sleep(5)
+                await success_msg.delete()
+                return
+            else:
+                # Suppression du message incorrect
+                await message.delete()
+
+                # Log de la tentative incorrecte
+                if log_channel:
+                    embed = discord.Embed(title="❌ Vérification Incorrecte", color=discord.Color.red())
+                    embed.add_field(name="Utilisateur", value=f"{message.author.mention} ({message.author.id})")
+                    embed.add_field(name="Tentative", value=f"```{message.content}```")
+                    embed.add_field(name="Compte créé le", value=message.author.created_at.strftime("%d/%m/%Y %H:%M"))
+                    embed.add_field(name="Rejoint le", value=message.author.joined_at.strftime("%d/%m/%Y %H:%M"))
+                    embed.set_thumbnail(url=message.author.display_avatar.url)
+                    embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+                    await log_channel.send(embed=embed)
+                return
 
         except Exception as e:
             if log_channel:
-                await log_channel.send(f"❌ Erreur lors de la gestion de l'arrivée de {member.mention}: {e}")
-
-    @bot.event
-    async def on_message(message):
-        if message.author.bot:
-            return
-
-        if message.channel == captcha_channel and message.author.id in captcha_codes:
-            try:
-                # Vérification du code
-                if message.content == captcha_codes[message.author.id]:
-                    # Récupération des rôles
-                    verified_role = discord.utils.get(message.guild.roles, name="Vérifié")
-                    visitor_role = message.guild.get_role(1332456121511710790)
-                    unverified_role = discord.utils.get(message.guild.roles, name="Non vérifié")
-
-                    # Création du rôle Vérifié si nécessaire
-                    if not verified_role:
-                        verified_role = await message.guild.create_role(name="Vérifié")
-
-                    # Ajout des rôles
-                    await message.author.add_roles(verified_role, visitor_role)
-                    if unverified_role:
-                        await message.author.remove_roles(unverified_role)
-
-                    # Suppression du message de vérification
-                    await message.delete()
-
-                    # Annulation du timeout
-                    if message.author.id in captcha_timeouts:
-                        captcha_timeouts[message.author.id].cancel()
-
-                    # Suppression des données de captcha
-                    del captcha_codes[message.author.id]
-                    del captcha_timeouts[message.author.id]
-
-                    # Log de la vérification réussie
-                    if log_channel:
-                        await log_channel.send(f"✅ {message.author.mention} a été vérifié avec succès")
-
-                    # Message temporaire de confirmation
-                    success_msg = await message.channel.send(f"✅ {message.author.mention} a été vérifié avec succès!")
-                    await asyncio.sleep(5)
-                    await success_msg.delete()
-                    return
-                else:
-                    # Suppression du message incorrect
-                    await message.delete()
-
-                    # Log de la tentative incorrecte
-                    if log_channel:
-                        await log_channel.send(f"❌ Tentative de vérification incorrecte pour {message.author.mention}")
-                    return
-
-            except Exception as e:
-                if log_channel:
-                    await log_channel.send(f"❌ Erreur lors de la vérification de {message.author.mention}: {e}")
+                await log_channel.send(f"❌ Erreur lors de la vérification de {message.author.mention}: {e}")
 
     # Vérification des permissions
     if message.author.guild_permissions.administrator:
@@ -320,7 +394,12 @@ async def on_ready():
             await message.channel.send(f"{message.author.mention} a été muté pendant 1 heure pour avoir trop mentionné des utilisateurs protégés.")
             bot.ping_counts[message.author.id] = 0
             if log_channel:
-                await log_channel.send(f"🔇 {message.author} a été muté pour avoir mentionné des utilisateurs protégés trop de fois")
+                embed = discord.Embed(title="🔇 Mute pour mentions abusives", color=discord.Color.orange())
+                embed.add_field(name="Utilisateur", value=f"{message.author.mention} ({message.author.id})")
+                embed.add_field(name="Raison", value="Trop de mentions d'utilisateurs protégés")
+                embed.add_field(name="Durée", value="1 heure")
+                embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+                await log_channel.send(embed=embed)
             return
 
     bucket = spam_cooldown.get_bucket(message)
@@ -336,6 +415,13 @@ async def on_ready():
                 f"{message.author.mention} a été exclu pendant 1 heure pour spam."
             )
             user_spam_count[user_id] = 0
+            if log_channel:
+                embed = discord.Embed(title="🔇 Mute pour spam", color=discord.Color.orange())
+                embed.add_field(name="Utilisateur", value=f"{message.author.mention} ({message.author.id})")
+                embed.add_field(name="Raison", value="Spam excessif")
+                embed.add_field(name="Durée", value="1 heure")
+                embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+                await log_channel.send(embed=embed)
         else:
             await message.channel.send(
                 f"{message.author.mention}, merci de ne pas spammer! Avertissement {user_spam_count[user_id]}/5"
@@ -374,11 +460,22 @@ async def ban(interaction: discord.Interaction,
     if not await check_command_permissions(interaction, "ban"):
         return
     await membre.ban(reason=raison)
-    await interaction.response.send_message(
-        f"{membre} a été banni. Raison: {raison}")
+    messages_ban = [
+        f"🔨 Paf! {membre.name} vient de gagner un aller simple vers BanLand!",
+        f"👋 {membre.name} a décidé de prendre des vacances permanentes!",
+        f"💥 {membre.name} s'est fait bannir plus vite que son ombre!"
+    ]
+    await interaction.response.send_message(random.choice(messages_ban))
     if log_channel:
-        await log_channel.send(
-            f"🔨 {interaction.user} a banni {membre}. Raison: {raison}")
+        embed = discord.Embed(title="🔨 Bannissement", color=discord.Color.red())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Utilisateur", value=f"{membre.mention} ({membre.id})")
+        embed.add_field(name="Raison", value=raison or "Aucune raison spécifiée")
+        embed.add_field(name="Compte créé le", value=membre.created_at.strftime("%d/%m/%Y %H:%M"))
+        embed.add_field(name="Rejoint le", value=membre.joined_at.strftime("%d/%m/%Y %H:%M"))
+        embed.set_thumbnail(url=membre.display_avatar.url)
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="kick", description="Expulser un utilisateur")
@@ -388,11 +485,22 @@ async def kick(interaction: discord.Interaction,
                membre: discord.Member,
                raison: str = None):
     await membre.kick(reason=raison)
-    await interaction.response.send_message(
-        f"{membre} a été expulsé. Raison: {raison}")
+    messages_kick = [
+        f"🦵 {membre.name} vient d'apprendre à voler... hors du serveur!",
+        f"🚀 {membre.name} a été promu au rang d'astronaute... Bon voyage!",
+        f"🎭 Et le prix de la sortie dramatique revient à... {membre.name}!"
+    ]
+    await interaction.response.send_message(random.choice(messages_kick))
     if log_channel:
-        await log_channel.send(
-            f"👢 {interaction.user} a expulsé {membre}. Raison: {raison}")
+        embed = discord.Embed(title="👢 Expulsion", color=discord.Color.orange())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Utilisateur", value=f"{membre.mention} ({membre.id})")
+        embed.add_field(name="Raison", value=raison or "Aucune raison spécifiée")
+        embed.add_field(name="Compte créé le", value=membre.created_at.strftime("%d/%m/%Y %H:%M"))
+        embed.add_field(name="Rejoint le", value=membre.joined_at.strftime("%d/%m/%Y %H:%M"))
+        embed.set_thumbnail(url=membre.display_avatar.url)
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="mute", description="Muter un utilisateur")
@@ -403,12 +511,23 @@ async def mute(interaction: discord.Interaction,
                duree: int,
                raison: str = None):
     await membre.timeout(datetime.timedelta(minutes=duree), reason=raison)
-    await interaction.response.send_message(
-        f"{membre} a été muté pour {duree} minutes. Raison: {raison}")
+    messages_mute = [
+        f"🤐 {membre.name} joue maintenant à 'Mime Simulator' pendant {duree} minutes!",
+        f"📢 {membre.name} prend une pause vocale forcée de {duree} minutes!",
+        f"🤫 Chut! {membre.name} fait une sieste de {duree} minutes!"
+    ]
+    await interaction.response.send_message(random.choice(messages_mute))
     if log_channel:
-        await log_channel.send(
-            f"🔇 {interaction.user} a muté {membre} pour {duree} minutes. Raison: {raison}"
-        )
+        embed = discord.Embed(title="🔇 Mute", color=discord.Color.orange())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Utilisateur", value=f"{membre.mention} ({membre.id})")
+        embed.add_field(name="Raison", value=raison or "Aucune raison spécifiée")
+        embed.add_field(name="Durée", value=f"{duree} minutes")
+        embed.add_field(name="Compte créé le", value=membre.created_at.strftime("%d/%m/%Y %H:%M"))
+        embed.add_field(name="Rejoint le", value=membre.joined_at.strftime("%d/%m/%Y %H:%M"))
+        embed.set_thumbnail(url=membre.display_avatar.url)
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="unmute", description="Démuter un utilisateur")
@@ -418,7 +537,14 @@ async def unmute(interaction: discord.Interaction, membre: discord.Member):
     await membre.timeout(None)
     await interaction.response.send_message(f"{membre} a été démuté.")
     if log_channel:
-        await log_channel.send(f"🔊 {interaction.user} a démuté {membre}")
+        embed = discord.Embed(title="🔊 Unmute", color=discord.Color.green())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Utilisateur", value=f"{membre.mention} ({membre.id})")
+        embed.add_field(name="Compte créé le", value=membre.created_at.strftime("%d/%m/%Y %H:%M"))
+        embed.add_field(name="Rejoint le", value=membre.joined_at.strftime("%d/%m/%Y %H:%M"))
+        embed.set_thumbnail(url=membre.display_avatar.url)
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="warn", description="Avertir un utilisateur")
@@ -430,20 +556,38 @@ async def warn(interaction: discord.Interaction, membre: discord.Member,
         user_warnings[membre.id] = []
     user_warnings[membre.id].append(raison)
     nb_warns = len(user_warnings[membre.id])
-    await interaction.response.send_message(
-        f"{membre} a reçu un avertissement ({nb_warns}/5). Raison: {raison}")
+    messages_warn = [
+        f"⚠️ {membre.name} collectionne les avertissements comme des Pokémon! ({nb_warns}/5)",
+        f"📝 {membre.name} vient d'ajouter une note à son carnet de bêtises! ({nb_warns}/5)",
+        f"🎯 Bingo! {membre.name} décroche son {nb_warns}ème avertissement!"
+    ]
+    await interaction.response.send_message(random.choice(messages_warn))
     if nb_warns >= 5:
         await membre.kick(reason="5 avertissements atteints")
         user_warnings[membre.id] = []  # Réinitialiser les avertissements
         await interaction.channel.send(
             f"{membre} a été expulsé pour avoir atteint 5 avertissements.")
         if log_channel:
-            await log_channel.send(
-                f"👢 {membre} a été expulsé après 5 avertissements")
+            embed = discord.Embed(title="👢 Expulsion pour 5 avertissements", color=discord.Color.red())
+            embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+            embed.add_field(name="Utilisateur", value=f"{membre.mention} ({membre.id})")
+            embed.add_field(name="Raison", value="5 avertissements atteints")
+            embed.add_field(name="Compte créé le", value=membre.created_at.strftime("%d/%m/%Y %H:%M"))
+            embed.add_field(name="Rejoint le", value=membre.joined_at.strftime("%d/%m/%Y %H:%M"))
+            embed.set_thumbnail(url=membre.display_avatar.url)
+            embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+            await log_channel.send(embed=embed)
     elif log_channel:
-        await log_channel.send(
-            f"⚠️ {interaction.user} a averti {membre} ({nb_warns}/5). Raison: {raison}"
-        )
+        embed = discord.Embed(title="⚠️ Avertissement", color=discord.Color.orange())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Utilisateur", value=f"{membre.mention} ({membre.id})")
+        embed.add_field(name="Raison", value=raison)
+        embed.add_field(name="Nombre d'avertissements", value=f"{nb_warns}/5")
+        embed.add_field(name="Compte créé le", value=membre.created_at.strftime("%d/%m/%Y %H:%M"))
+        embed.add_field(name="Rejoint le", value=membre.joined_at.strftime("%d/%m/%Y %H:%M"))
+        embed.set_thumbnail(url=membre.display_avatar.url)
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="warnings",
@@ -469,9 +613,12 @@ async def clear(interaction: discord.Interaction, nombre: int):
     await interaction.followup.send(
         f"{nombre} messages ont été supprimés", ephemeral=True)
     if log_channel:
-        await log_channel.send(
-            f"🗑️ {interaction.user} a supprimé {nombre} messages dans {interaction.channel.mention}"
-        )
+        embed = discord.Embed(title="🗑️ Messages Supprimés", color=discord.Color.purple())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Salon", value=f"{interaction.channel.mention}")
+        embed.add_field(name="Nombre de messages", value=str(nombre))
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="slowmode", description="Définir le mode lent")
@@ -481,6 +628,13 @@ async def slowmode(interaction: discord.Interaction, duree: int):
     await interaction.channel.edit(slowmode_delay=duree)
     await interaction.response.send_message(
         f"Mode lent défini à {duree} secondes")
+    if log_channel:
+        embed = discord.Embed(title="🐌 Slowmode Activé", color=discord.Color.blue())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Salon", value=f"{interaction.channel.mention}")
+        embed.add_field(name="Durée", value=f"{duree} secondes")
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 
 @bot.tree.command(name="lock", description="Verrouiller le salon")
@@ -497,11 +651,64 @@ async def lock(interaction: discord.Interaction):
                                                 add_reactions=False)
     await interaction.response.send_message("🔒 Salon verrouillé")
     if log_channel:
-        await log_channel.send(
-            f"🔒 {interaction.user} a verrouillé {interaction.channel.mention}")
+        embed = discord.Embed(title="🔒 Salon Verrouillé", color=discord.Color.red())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Salon", value=f"{interaction.channel.mention}")
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
+
+@bot.tree.command(name="purge", description="Purge et recrée le salon")
+@commands.has_permissions(manage_channels=True)
+@commands.check(role_check)
+async def purge(interaction: discord.Interaction):
+    if not await check_command_permissions(interaction, "purge"):
+        return
+        
+    try:
+        # Sauvegarder les infos du salon
+        old_channel = interaction.channel
+        channel_position = old_channel.position
+        channel_name = old_channel.name
+        channel_category = old_channel.category
+        channel_permissions = old_channel.overwrites
+        
+        # Supprimer l'ancien salon
+        await old_channel.delete()
+        
+        # Créer le nouveau salon
+        new_channel = await interaction.guild.create_text_channel(
+            name=channel_name,
+            category=channel_category,
+            position=channel_position,
+            overwrites=channel_permissions
+        )
+        
+        # Messages drôles sur le thème du ménage
+        messages = [
+            "🧹 Je viens de faire le grand ménage de printemps !",
+            "🧼 Plus propre que ça, tu meurs !",
+            "🗑️ Les messages d'avant ? Quels messages ?",
+            "✨ Tadaaa ! C'est tout beau tout neuf !",
+            "🧽 J'ai tout récuré, même sous les emojis !"
+        ]
+        
+        await new_channel.send(random.choice(messages))
+        
+        if log_channel:
+            embed = discord.Embed(title="🔄 Salon Purgé", color=discord.Color.blue())
+            embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+            embed.add_field(name="Salon", value=f"#{channel_name}")
+            embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+            await log_channel.send(embed=embed)
+            
+    except Exception as e:
+        if log_channel:
+            await log_channel.send(f"❌ Erreur lors de la purge du salon : {e}")
 
 @bot.tree.command(name="unlock", description="Déverrouiller le salon")
+@commands.has_permissions(manage_channels=True)
+@commands.check(role_check)
 async def unlock(interaction: discord.Interaction):
     if not await check_command_permissions(interaction, "unlock"):
         return
@@ -516,139 +723,21 @@ async def unlock(interaction: discord.Interaction):
                                                     add_reactions=True)
         await interaction.response.send_message("🔓 Salon déverrouillé")
         if log_channel:
-            await log_channel.send(
-                f"🔓 {interaction.user} a déverrouillé {interaction.channel.mention}")
-    except discord.Forbidden:
-        await interaction.response.send_message("Je n'ai pas la permission de déverrouiller ce salon.", ephemeral=True)
-
-
-# Commandes d'information
-@bot.tree.command(name="userinfo",
-                  description="Informations sur un utilisateur")
-async def userinfo(interaction: discord.Interaction, membre: discord.Member):
-    embed = discord.Embed(title=f"Informations sur {membre}")
-    embed.add_field(name="ID", value=membre.id)
-    embed.add_field(name="Rejoint le",
-                    value=membre.joined_at.strftime("%d/%m/%Y"))
-    embed.add_field(name="Compte créé le",
-                    value=membre.created_at.strftime("%d/%m/%Y"))
-    embed.add_field(name="Rôles",
-                    value=", ".join([r.name for r in membre.roles[1:]]))
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="serverinfo", description="Informations sur le serveur")
-async def serverinfo(interaction: discord.Interaction):
-    guild = interaction.guild
-    embed = discord.Embed(title=f"Informations sur {guild.name}")
-    embed.add_field(name="Membres", value=guild.member_count)
-    embed.add_field(name="Créé le",
-                    value=guild.created_at.strftime("%d/%m/%Y"))
-    embed.add_field(name="Nombre de rôles", value=len(guild.roles))
-    await interaction.response.send_message(embed=embed)
-
-
-# Commandes de gestion des rôles
-@bot.tree.command(name="addrole", description="Ajouter un rôle")
-@commands.has_permissions(manage_roles=True)
-@commands.check(role_check)
-async def addrole(interaction: discord.Interaction, membre: discord.Member,
-                  role: discord.Role):
-    await membre.add_roles(role)
-    await interaction.response.send_message(
-        f"Le rôle {role.name} a été ajouté à {membre}")
-    if log_channel:
-        await log_channel.send(
-            f"➕ {interaction.user} a ajouté le rôle {role.name} à {membre}")
-
-
-@bot.tree.command(name="removerole", description="Retirer un rôle")
-@commands.has_permissions(manage_roles=True)
-@commands.check(role_check)
-async def removerole(interaction: discord.Interaction, membre: discord.Member,
-                     role: discord.Role):
-    await membre.remove_roles(role)
-    await interaction.response.send_message(
-        f"Le rôle {role.name} a été retiré à {membre}")
-    if log_channel:
-        await log_channel.send(
-            f"➖ {interaction.user} a retiré le rôle {role.name} à {membre}")
-
-
-# Commandes Anti-Raid
-@bot.tree.command(name="antiraid",
-                  description="Activer/désactiver l'anti-raid")
-@commands.has_permissions(administrator=True)
-async def antiraid(interaction: discord.Interaction, etat: bool):
-    global antiraid_enabled
-    antiraid_enabled = etat
-    await interaction.response.send_message(
-        f"Anti-raid {'activé' if etat else 'désactivé'}")
-    if log_channel:
-        await log_channel.send(
-            f"🛡️ {interaction.user} a {'activé' if etat else 'désactivé'} l'anti-raid"
-        )
-
-
-@bot.tree.command(name="whitelist", description="Gérer la whitelist")
-@commands.has_permissions(administrator=True)
-async def whitelist_cmd(interaction: discord.Interaction, action: str,
-                        membre: discord.Member):
-    if action == "add":
-        whitelist.add(membre.id)
-        await interaction.response.send_message(
-            f"{membre} a été ajouté à la whitelist")
-    elif action == "remove":
-        whitelist.remove(membre.id)
-        await interaction.response.send_message(
-            f"{membre} a été retiré de la whitelist")
-
-
-# Configuration des logs
-@bot.tree.command(name="channelscaptcha", description="Définir le salon pour les captchas")
-@commands.has_permissions(administrator=True)
-async def set_captcha_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    global captcha_channel
-    captcha_channel = channel
-    await interaction.response.send_message(f"Salon des captchas défini sur {channel.mention}")
-
-@bot.tree.command(name="logchannel", description="Définir le salon des logs")
-@commands.has_permissions(administrator=True)
-async def set_log_channel(interaction: discord.Interaction,
-                          channel: discord.TextChannel):
-    global log_channel
-    log_channel = channel
-    await interaction.response.send_message(
-        f"Salon des logs défini sur {channel.mention}")
-
-
-@bot.tree.command(name="nouveau_code",
-                  description="Recevoir un nouveau code de vérification")
-async def nouveau_code(interaction: discord.Interaction):
-    code = generate_captcha()
-    captcha_codes[interaction.user.id] = code
-    embed = discord.Embed(title="Nouveau code de vérification",
-                          color=discord.Color.blue())
-    embed.description = f"Voici votre nouveau code de vérification. Utilisez la commande `/verify` avec le code ci-dessous:"
-    embed.add_field(name="Votre nouveau code", value=f"```{code}```")
-    embed.set_footer(text="Utilisez /verify <code> pour vous vérifier")
-    try:
-        await interaction.user.send(embed=embed)
-        await interaction.response.send_message(
-            "Un nouveau code vous a été envoyé en message privé.",
-            ephemeral=True)
-        if log_channel:
-            await log_channel.send(
-                f"🔄 Un nouveau code captcha a été envoyé à {interaction.user.mention}"
-            )
+            embed = discord.Embed(title="🔓 Salon Déverrouillé", color=discord.Color.green())
+            embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+            embed.add_field(name="Salon", value=f"{interaction.channel.mention}")
+            embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+            await log_channel.send(embed=embed)
     except:
-        await interaction.response.send_message(
-            "Impossible de vous envoyer un message privé. Veuillez activer vos DMs.",
-            ephemeral=True)
+        await interaction.response.send_message("Une erreur est survenue lors du déverrouillage du salon.", ephemeral=True)
         if log_channel:
-            await log_channel.send(
-                f"❌ Impossible d'envoyer le nouveau captcha à {interaction.user.mention} (DMs fermés)"
-            )
+            embed = discord.Embed(title="❌ Erreur lors du déverrouillage", color=discord.Color.red())
+            embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+            embed.add_field(name="Salon", value=f"{interaction.channel.mention}")
+            embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+            await log_channel.send(embed=embed)
+
+
 
 
 @bot.event
@@ -665,37 +754,35 @@ async def on_member_join(member):
     captcha_codes[member.id] = code
     captcha_timeouts[member.id] = asyncio.create_task(asyncio.sleep(120))
 
+    if not captcha_channel:
+        return
+
     embed = discord.Embed(title="Vérification requise", color=discord.Color.blue())
-    embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code ci-dessous dans ce salon dans les 2 minutes:\n```{code}```"
+    embed.description = f"Bienvenue {member.mention}!\nPour accéder au serveur, envoyez le code suivant dans ce salon dans les 2 minutes:\n```{code}```"
+    await captcha_channel.send(embed=embed)
+    if log_channel:
+            embed = discord.Embed(title="🤖 Captcha Envoyé", color=discord.Color.green())
+            embed.add_field(name="Utilisateur", value=f"{member.mention} ({member.id})")
+            embed.add_field(name="Code", value=f"```{code}```")
+            embed.add_field(name="Compte créé le", value=member.created_at.strftime("%d/%m/%Y %H:%M"))
+            embed.add_field(name="Rejoint le", value=member.joined_at.strftime("%d/%m/%Y %H:%M"))
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
+            await log_channel.send(embed=embed)
 
-    msg = await captcha_channel.send(embed=embed)
-    captcha_timeouts[member.id] = asyncio.create_task(delete_after_timeout(msg, member.id, 120))
-
-
-async def delete_after_timeout(msg, member_id, timeout):
-    await asyncio.sleep(timeout)
-    if member_id in captcha_codes:
-        try:
-            await msg.delete()
-            await captcha_channel.send(f"{msg.author.mention} Votre temps de vérification a expiré.")
-            await member_kick(msg.author)
-            del captcha_codes[member_id]
-            del captcha_timeouts[member_id]
-
-        except discord.HTTPException:
-            pass
-
-
-async def member_kick(member):
     try:
-        await member.kick(reason="Captcha non résolu dans le délai imparti.")
-    except discord.HTTPException as e:
-        print(f"Erreur lors de l'expulsion de {member}: {e}")
+        await asyncio.wait_for(captcha_timeouts[member.id], timeout=120)
+        if member.id in captcha_codes:
+            await member.kick(reason="Timeout captcha")
+            del captcha_codes[member.id]
+            del captcha_timeouts[member.id]
+            if log_channel:
+                await log_channel.send(f"{member} a été expulsé pour timeout captcha")
 
+    except asyncio.TimeoutError:
+        pass
+    except Exception as e:
+        if log_channel:
+            await log_channel.send(f"Erreur lors de la gestion du timeout captcha pour {member}: {e}")
 
-# Démarrer Flask dans un thread séparé
-flask_thread = threading.Thread(target=run_flask)
-flask_thread.start()
-
-# Lancer le bot
 bot.run(token)
