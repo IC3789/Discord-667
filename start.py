@@ -43,12 +43,18 @@ ticket_category_id = 1332456333391433739
 staff_role_id = 1332456095393906752
 captcha_channel = None
 captcha_timeouts = {}
+captcha_attempts = {}
+MAX_ATTEMPTS = 3
 
 def generate_captcha():
-    """Génère un code captcha aléatoire"""
+    """Génère un code captcha simple en minuscules"""
     import random
     import string
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    
+    # Uniquement lettres minuscules et chiffres
+    chars = string.ascii_lowercase + string.digits
+    # Code de 6 caractères pour faciliter la copie
+    return ''.join(random.choices(chars, k=6))
 
 class TicketView(View):
     def __init__(self):
@@ -185,14 +191,14 @@ async def setlogs(interaction: discord.Interaction, salon: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
         global log_channel
         log_channel = salon
-        
+
         # Message de confirmation dans le salon des logs
         embed = discord.Embed(title="✅ Salon des logs configuré", color=discord.Color.green())
         embed.description = "Les logs seront désormais envoyés dans ce salon"
         embed.add_field(name="Configuré par", value=f"{interaction.user.mention}")
         embed.set_footer(text=f"ID de l'action: {interaction.id}")
         await salon.send(embed=embed)
-        
+
         await interaction.followup.send(f"Salon des logs défini sur {salon.mention}")
     except Exception as e:
         await interaction.followup.send(f"Une erreur est survenue: {str(e)}", ephemeral=True)
@@ -322,7 +328,35 @@ async def on_message(message):
         return
 
     if message.channel == captcha_channel and message.author.id in captcha_codes:
+        # Suppression automatique du message de l'utilisateur
+        await message.delete()
+        
         try:
+            # Gestion des tentatives
+            if message.author.id not in captcha_attempts:
+                captcha_attempts[message.author.id] = 0
+            captcha_attempts[message.author.id] += 1
+            
+            # Envoi d'un message privé avec le nombre de tentatives restantes
+            remaining_attempts = MAX_ATTEMPTS - captcha_attempts[message.author.id]
+            try:
+                await message.author.send(f"Il vous reste {remaining_attempts} tentatives. Code entré: `{message.content}`")
+            except:
+                pass
+                
+            # Vérification du nombre de tentatives
+            if captcha_attempts[message.author.id] > MAX_ATTEMPTS:
+                try:
+                    await message.author.send("Vous avez dépassé le nombre maximum de tentatives.")
+                except:
+                    pass
+                await message.author.kick(reason="Trop de tentatives de captcha incorrectes")
+                del captcha_codes[message.author.id]
+                del captcha_attempts[message.author.id]
+                if log_channel:
+                    await log_channel.send(f"🚫 {message.author.mention} a été expulsé pour trop de tentatives de captcha incorrectes")
+                return
+                
             # Vérification du code
             if message.content == captcha_codes[message.author.id]:
                 # Récupération des rôles
@@ -683,7 +717,7 @@ async def lock(interaction: discord.Interaction):
 async def purge(interaction: discord.Interaction):
     if not await check_command_permissions(interaction, "purge"):
         return
-        
+
     try:
         # Sauvegarder les infos du salon
         old_channel = interaction.channel
@@ -691,10 +725,10 @@ async def purge(interaction: discord.Interaction):
         channel_name = old_channel.name
         channel_category = old_channel.category
         channel_permissions = old_channel.overwrites
-        
+
         # Supprimer l'ancien salon
         await old_channel.delete()
-        
+
         # Créer le nouveau salon
         new_channel = await interaction.guild.create_text_channel(
             name=channel_name,
@@ -702,7 +736,7 @@ async def purge(interaction: discord.Interaction):
             position=channel_position,
             overwrites=channel_permissions
         )
-        
+
         # Messages drôles sur le thème du ménage
         messages = [
             "🧹 Je viens de faire le grand ménage de printemps !",
@@ -711,19 +745,26 @@ async def purge(interaction: discord.Interaction):
             "✨ Tadaaa ! C'est tout beau tout neuf !",
             "🧽 J'ai tout récuré, même sous les emojis !"
         ]
-        
+
         await new_channel.send(random.choice(messages))
-        
+
         if log_channel:
             embed = discord.Embed(title="🔄 Salon Purgé", color=discord.Color.blue())
             embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
             embed.add_field(name="Salon", value=f"#{channel_name}")
             embed.set_footer(text=f"Action effectuée par {bot.user.name}", icon_url=bot.user.display_avatar.url)
             await log_channel.send(embed=embed)
-            
+
     except Exception as e:
         if log_channel:
             await log_channel.send(f"❌ Erreur lors de la purge du salon : {e}")
+
+@bot.tree.command(name="test", description="Tester le système de captcha")
+async def test(interaction: discord.Interaction):
+    code = generate_captcha()
+    embed = discord.Embed(title="Test Captcha", color=discord.Color.blue())
+    embed.description = f"Voici un code captcha de test:\n```{code}```\nVous pouvez l'essayer, mais il n'aura aucun effet."
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="unlock", description="Déverrouiller le salon")
 @commands.has_permissions(manage_channels=True)
