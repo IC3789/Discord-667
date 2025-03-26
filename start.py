@@ -181,16 +181,21 @@ async def setcaptcha(interaction: discord.Interaction, salon: discord.TextChanne
 @bot.tree.command(name="setlogs", description="Définir le salon des logs")
 @commands.has_permissions(administrator=True)
 async def setlogs(interaction: discord.Interaction, salon: discord.TextChannel):
-    global log_channel
-    log_channel = salon
-    await interaction.response.send_message(f"Salon des logs défini sur {salon.mention}")
-    
-    # Message de confirmation dans le salon des logs
-    embed = discord.Embed(title="✅ Salon des logs configuré", color=discord.Color.green())
-    embed.description = "Les logs seront désormais envoyés dans ce salon"
-    embed.add_field(name="Configuré par", value=f"{interaction.user.mention}")
-    embed.set_footer(text=f"ID de l'action: {interaction.id}")
-    await log_channel.send(embed=embed)
+    try:
+        await interaction.response.defer(ephemeral=True)
+        global log_channel
+        log_channel = salon
+        
+        # Message de confirmation dans le salon des logs
+        embed = discord.Embed(title="✅ Salon des logs configuré", color=discord.Color.green())
+        embed.description = "Les logs seront désormais envoyés dans ce salon"
+        embed.add_field(name="Configuré par", value=f"{interaction.user.mention}")
+        embed.set_footer(text=f"ID de l'action: {interaction.id}")
+        await salon.send(embed=embed)
+        
+        await interaction.followup.send(f"Salon des logs défini sur {salon.mention}")
+    except Exception as e:
+        await interaction.followup.send(f"Une erreur est survenue: {str(e)}", ephemeral=True)
 
 @bot.event
 async def on_message(message):
