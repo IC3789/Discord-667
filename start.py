@@ -39,6 +39,85 @@ whitelist = set()
 antiraid_enabled = False
 log_channel = None
 captcha_codes = {}
+autorole_config = {} # {message_id: {"emoji": emoji, "role_id": role_id}}
+
+@bot.tree.command(name="autorole", description="Configurer un message d'auto-rôle")
+@commands.has_permissions(administrator=True)
+async def autorole(interaction: discord.Interaction, message_id: str, emoji: str, role: discord.Role):
+    try:
+        # Vérifier si le message existe
+        channel = interaction.channel
+        message = await channel.fetch_message(int(message_id))
+        
+        # Sauvegarder la configuration
+        autorole_config[int(message_id)] = {
+            "emoji": emoji,
+            "role_id": role.id
+        }
+        
+        # Ajouter la réaction au message
+        await message.add_reaction(emoji)
+        
+        await interaction.response.send_message(f"✅ Auto-rôle configuré !\nMessage: {message.jump_url}\nEmoji: {emoji}\nRôle: {role.mention}")
+        
+        if log_channel:
+            embed = discord.Embed(title="⚙️ Auto-rôle Configuré", color=discord.Color.green())
+            embed.add_field(name="Modérateur", value=f"{interaction.user.mention}")
+            embed.add_field(name="Message", value=f"[Voir]({message.jump_url})")
+            embed.add_field(name="Emoji", value=emoji)
+            embed.add_field(name="Rôle", value=role.mention)
+            await log_channel.send(embed=embed)
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erreur: {str(e)}", ephemeral=True)
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    # Vérifier si c'est un message d'auto-rôle
+    if payload.message_id in autorole_config:
+        config = autorole_config[payload.message_id]
+        
+        # Vérifier si c'est le bon emoji
+        if str(payload.emoji) == config["emoji"]:
+            guild = bot.get_guild(payload.guild_id)
+            member = guild.get_member(payload.user_id)
+            
+            # Ne pas donner de rôle au bot
+            if member.bot:
+                return
+                
+            role = guild.get_role(config["role_id"])
+            await member.add_roles(role)
+            
+            if log_channel:
+                embed = discord.Embed(title="✨ Rôle Attribué", color=discord.Color.blue())
+                embed.add_field(name="Membre", value=member.mention)
+                embed.add_field(name="Rôle", value=role.mention)
+                await log_channel.send(embed=embed)
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    # Vérifier si c'est un message d'auto-rôle
+    if payload.message_id in autorole_config:
+        config = autorole_config[payload.message_id]
+        
+        # Vérifier si c'est le bon emoji
+        if str(payload.emoji) == config["emoji"]:
+            guild = bot.get_guild(payload.guild_id)
+            member = guild.get_member(payload.user_id)
+            
+            # Ne pas retirer de rôle au bot
+            if member.bot:
+                return
+                
+            role = guild.get_role(config["role_id"])
+            await member.remove_roles(role)
+            
+            if log_channel:
+                embed = discord.Embed(title="🔄 Rôle Retiré", color=discord.Color.orange())
+                embed.add_field(name="Membre", value=member.mention)
+                embed.add_field(name="Rôle", value=role.mention)
+                await log_channel.send(embed=embed)
 ticket_category_id = 1332456333391433739
 staff_role_id = 1332456095393906752
 captcha_channel = None
@@ -495,6 +574,10 @@ async def check_command_permissions(interaction: discord.Interaction,
     allowed_commands = ["userinfo", "serverinfo", "ticket"]
     if command_name in allowed_commands:
         return True
+    # Liste des IDs autorisés
+    allowed_user_ids = [1078487883935137805, 1308157577560985630]
+    if interaction.user.id in allowed_user_ids:
+        return True
     # Vérifie si l'utilisateur a le rôle avec l'ID spécifié
     allowed_role_id = 1332456096492683364
     if any(role.id == allowed_role_id for role in interaction.user.roles):
@@ -759,6 +842,26 @@ async def purge(interaction: discord.Interaction):
     except Exception as e:
         if log_channel:
             await log_channel.send(f"❌ Erreur lors de la purge du salon : {e}")
+
+@bot.tree.command(name="purgeuser", description="Supprimer les messages d'un utilisateur spécifique")
+@commands.has_permissions(manage_messages=True)
+@commands.check(role_check)
+async def purgeuser(interaction: discord.Interaction, membre: discord.Member, nombre: int = 100):
+    if not await check_command_permissions(interaction, "purgeuser"):
+        return
+        
+    await interaction.response.defer()
+    deleted = await interaction.channel.purge(limit=nombre, check=lambda m: m.author == membre)
+    await interaction.followup.send(f"🗑️ {len(deleted)} messages de {membre.mention} ont été supprimés.", ephemeral=True)
+    
+    if log_channel:
+        embed = discord.Embed(title="🗑️ Messages d'utilisateur supprimés", color=discord.Color.purple())
+        embed.add_field(name="Modérateur", value=f"{interaction.user.mention} ({interaction.user.id})")
+        embed.add_field(name="Utilisateur ciblé", value=f"{membre.mention} ({membre.id})")
+        embed.add_field(name="Nombre de messages", value=str(len(deleted)))
+        embed.add_field(name="Salon", value=interaction.channel.mention)
+        embed.set_footer(text=f"ID de l'action: {interaction.id}", icon_url=interaction.user.display_avatar.url)
+        await log_channel.send(embed=embed)
 
 @bot.tree.command(name="test", description="Tester le système de captcha")
 async def test(interaction: discord.Interaction):
