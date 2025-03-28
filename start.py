@@ -39,7 +39,7 @@ whitelist = set()
 antiraid_enabled = False
 log_channel = None
 captcha_codes = {}
-autorole_config = {} # {message_id: {"emoji": emoji, "role_id": role_id}}
+autorole_config = {} # {message_id: [{"emoji": emoji, "role_id": role_id}]}
 
 @bot.tree.command(name="autorole", description="Configurer un message d'auto-rôle")
 @commands.has_permissions(administrator=True)
@@ -49,11 +49,26 @@ async def autorole(interaction: discord.Interaction, message_id: str, emoji: str
         channel = interaction.channel
         message = await channel.fetch_message(int(message_id))
         
-        # Sauvegarder la configuration
-        autorole_config[int(message_id)] = {
+        # Initialiser la liste des configurations si nécessaire
+        msg_id = int(message_id)
+        if msg_id not in autorole_config:
+            autorole_config[msg_id] = []
+            
+        # Vérifier si on n'a pas déjà 6 rôles configurés
+        if len(autorole_config[msg_id]) >= 6:
+            await interaction.response.send_message("❌ Maximum de 6 rôles atteint pour ce message.", ephemeral=True)
+            return
+            
+        # Vérifier si l'emoji n'est pas déjà utilisé
+        if any(config["emoji"] == emoji for config in autorole_config[msg_id]):
+            await interaction.response.send_message("❌ Cet emoji est déjà utilisé sur ce message.", ephemeral=True)
+            return
+            
+        # Ajouter la nouvelle configuration
+        autorole_config[msg_id].append({
             "emoji": emoji,
             "role_id": role.id
-        }
+        })
         
         # Ajouter la réaction au message
         await message.add_reaction(emoji)
@@ -75,10 +90,11 @@ async def autorole(interaction: discord.Interaction, message_id: str, emoji: str
 async def on_raw_reaction_add(payload):
     # Vérifier si c'est un message d'auto-rôle
     if payload.message_id in autorole_config:
-        config = autorole_config[payload.message_id]
+        configs = autorole_config[payload.message_id]
         
-        # Vérifier si c'est le bon emoji
-        if str(payload.emoji) == config["emoji"]:
+        # Chercher la configuration correspondant à l'emoji
+        config = next((c for c in configs if str(payload.emoji) == c["emoji"]), None)
+        if config:
             guild = bot.get_guild(payload.guild_id)
             member = guild.get_member(payload.user_id)
             
@@ -99,10 +115,11 @@ async def on_raw_reaction_add(payload):
 async def on_raw_reaction_remove(payload):
     # Vérifier si c'est un message d'auto-rôle
     if payload.message_id in autorole_config:
-        config = autorole_config[payload.message_id]
+        configs = autorole_config[payload.message_id]
         
-        # Vérifier si c'est le bon emoji
-        if str(payload.emoji) == config["emoji"]:
+        # Chercher la configuration correspondant à l'emoji
+        config = next((c for c in configs if str(payload.emoji) == c["emoji"]), None)
+        if config:
             guild = bot.get_guild(payload.guild_id)
             member = guild.get_member(payload.user_id)
             
